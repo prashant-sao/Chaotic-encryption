@@ -1,96 +1,139 @@
 import soundfile as sf
 import numpy as np
-import os
+
+# ============================================================
+#  BASIC AUDIO HELPERS
+# ============================================================
 
 def audio_to_pcm(path):
-    """Load audio file and convert to PCM samples"""
+    """Load audio file and convert to PCM numpy samples."""
     try:
-        # Load audio using soundfile (supports WAV, FLAC, OGG, etc.)
         audio_data, frame_rate = sf.read(path)
-        
-        # Handle mono vs stereo
-        if len(audio_data.shape) == 1:
+
+        # Mono or stereo check
+        if audio_data.ndim == 1:
             channels = 1
         else:
             channels = audio_data.shape[1]
-        
-        # Convert to int16 for standard PCM format
+
+        # Convert float audio → int16 PCM
         if audio_data.dtype != np.int16:
-            # If float, scale to int16 range
-            if audio_data.dtype in [np.float32, np.float64]:
+            if audio_data.dtype in (np.float32, np.float64):
                 audio_data = np.clip(audio_data * 32767, -32768, 32767).astype(np.int16)
             else:
                 audio_data = audio_data.astype(np.int16)
-        
-        sample_width = 2  # int16 = 2 bytes per sample
-        
+
+        sample_width = 2  # int16 = 2 bytes
+
         return audio_data, sample_width, frame_rate, channels
-    
+
     except Exception as e:
         raise Exception(f"Failed to load audio file {path}: {e}")
 
+
 def pcm_to_bytes(samples, sample_width):
-    """Convert PCM numpy array to raw bytes"""
+    """Convert PCM samples → raw bytes."""
     dtype = {1: np.int8, 2: np.int16, 4: np.int32}[sample_width]
     return samples.astype(dtype).tobytes()
 
-def chaos_encode(byte_stream):
-    """Placeholder for chaotic encryption - replace with actual encryption"""
-    # TODO: Implement Chua/Lorenz/Logistic encryption
-    return byte_stream
-
-def chaos_decode(byte_stream):
-    """Placeholder for chaotic decryption - replace with actual decryption"""
-    # TODO: Implement corresponding decryption
-    return byte_stream
 
 def bytes_to_pcm(byte_stream, sample_width, channels):
-    """Convert raw bytes back to PCM numpy array"""
+    """Convert raw bytes → PCM numpy samples."""
     dtype = {1: np.int8, 2: np.int16, 4: np.int32}[sample_width]
+
     samples = np.frombuffer(byte_stream, dtype=dtype)
-    
+
     if channels == 2:
         samples = samples.reshape((-1, 2))
-    
+
     return samples
 
+
 def pcm_to_audio(samples, sample_width, frame_rate, channels, out_path):
-    """Convert PCM samples back to audio file"""
+    """Save PCM numpy buffer → WAV."""
     try:
-        # Ensure correct shape
-        if channels == 2 and len(samples.shape) == 1:
+        # Ensure stereo shape
+        if channels == 2 and samples.ndim == 1:
             samples = samples.reshape((-1, 2))
-        
-        # Convert int16 back to float32 for soundfile
+
+        # Convert PCM int16 → float32 for soundfile
         if samples.dtype == np.int16:
             samples_float = samples.astype(np.float32) / 32767.0
         else:
             samples_float = samples.astype(np.float32)
-        
-        # Write to WAV file
+
         sf.write(out_path, samples_float, frame_rate, subtype='PCM_16')
-        
+
     except Exception as e:
-        raise Exception(f"Failed to save audio file {out_path}: {e}")
+        raise Exception(f"Failed to save WAV file {out_path}: {e}")
 
-def pcm_pipeline(path_in, path_out):
-    """Full pipeline: load -> encode -> decode -> save"""
+
+# ============================================================
+#  SECURE CHAOTIC AUDIO ENCODING
+# ============================================================
+
+def chaos_encrypt_pcm(samples, keystream):
+    """
+    XOR-encrypt PCM samples using chaotic bit keystream.
+    samples: np.int16 array (mono or stereo flattened)
+    keystream: string of bits "01011011..."
+    """
+
+    # Convert keystream into int array
+    ks = np.array([int(b) for b in keystream], dtype=np.uint8)
+
+    # Flatten stereo
+    flat = samples.flatten()
+
+    # Resize keystream to sample count
+    ks = np.resize(ks, flat.shape)
+
+    # XOR per sample
+    enc = flat ^ ks
+
+    return enc.astype(np.int16)
+
+
+def chaos_decrypt_pcm(encoded_samples, keystream):
+    """XOR-decrypt PCM samples (same as encode)."""
+    ks = np.array([int(b) for b in keystream], dtype=np.uint8)
+    ks = np.resize(ks, encoded_samples.shape)
+
+    dec = encoded_samples ^ ks
+    return dec.astype(np.int16)
+
+
+# ============================================================
+#  FUNCTIONS USED BY GUI
+# ============================================================
+
+def chaos_encode_audio(path_in, keystream):
+    """
+    Convert audio → PCM → XOR-encrypt → raw bytes.
+    Used by SenderGUI.
+    """
     samples, sample_width, frame_rate, channels = audio_to_pcm(path_in)
-    raw_bytes = pcm_to_bytes(samples, sample_width)
-    encoded = chaos_encode(raw_bytes)
-    decoded = chaos_decode(encoded)
-    recovered = bytes_to_pcm(decoded, sample_width, channels)
-    pcm_to_audio(recovered, sample_width, frame_rate, channels, path_out)
 
-def chaos_encode_audio(path_in):
-    """Load and encode audio for transmission"""
-    samples, sample_width, frame_rate, channels = audio_to_pcm(path_in)
-    raw = pcm_to_bytes(samples, sample_width)
-    enc = chaos_encode(raw)
-    return enc, sample_width, frame_rate, channels
+    encrypted_samples = chaos_encrypt_pcm(samples, keystream)
+    raw = pcm_to_bytes(encrypted_samples, sample_width)
 
-def chaos_decode_audio(encoded_bytes, sample_width, frame_rate, channels, path_out):
-    """Decode received audio and save to file"""
-    raw = chaos_decode(encoded_bytes)
-    samples = bytes_to_pcm(raw, sample_width, channels)
-    pcm_to_audio(samples, sample_width, frame_rate, channels, path_out)
+    return raw, sample_width, frame_rate, channels, samples.size   # return sample count
+
+
+def chaos_decode_audio(encoded_bytes, sample_width, frame_rate, channels, keystream, path_out):
+    """
+    XOR-decrypt raw audio bytes → PCM → WAV.
+    Used by ReceiverGUI.
+    """
+    encrypted = bytes_to_pcm(encoded_bytes, sample_width, channels)
+
+    # flatten in case stereo
+    encrypted = encrypted.flatten()
+
+    decrypted = chaos_decrypt_pcm(encrypted, keystream)
+
+    # reshape if stereo
+    if channels == 2:
+        decrypted = decrypted.reshape((-1, 2))
+
+    pcm_to_audio(decrypted, sample_width, frame_rate, channels, path_out)

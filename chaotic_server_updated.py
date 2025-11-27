@@ -8,7 +8,7 @@ from tkinter import ttk, scrolledtext, messagebox, filedialog
 import threading
 import socket
 import pickle
-from audio_to_pcm import chaos_encode_audio, chaos_decode_audio
+from image_encode import chaos_encode_image, chaos_decode_image
 
 
 class ChaoticSystem:
@@ -210,10 +210,10 @@ class SenderGUI:
         self.message_input = scrolledtext.ScrolledText(input_frame, height=4, wrap=tk.WORD)
         self.message_input.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=5)
         self.message_input.insert(1.0, "Secret message from chaos!")
+        image_btn = ttk.Button(input_frame, text="Select Image File",
+                       command=self.select_image_file)
+        image_btn.grid(row=1, column=0, pady=5)
 
-        audio_btn = ttk.Button(input_frame, text="🎵 Select Audio File",
-                       command=self.select_audio_file)
-        audio_btn.grid(row=1, column=0, pady=5)
 
         # Send button
         send_frame = ttk.Frame(main_frame)
@@ -239,11 +239,12 @@ class SenderGUI:
                                relief=tk.SUNKEN, anchor=tk.W)
         status_bar.grid(row=6, column=0, sticky=(tk.W, tk.E), pady=5)
 
-    def select_audio_file(self):
-        file = filedialog.askopenfilename(filetypes=[("Audio Files", "*.wav *.mp3 *.flac")])
+    def select_image_file(self):
+        file = filedialog.askopenfilename(filetypes=[("Image Files", "*.png *.jpg *.jpeg")])
         if file:
-            self.audio_path = file
-            self.log(f"🎵 Selected audio file: {file}")
+            self.image_path = file
+            self.log(f"Selected image: {file}")
+
 
     def log(self, message):
         self.log_text.insert(tk.END, f"{message}\n")
@@ -314,59 +315,57 @@ class SenderGUI:
             system = create_system(self.system_var.get(), initial)
             encoder = ChaoticEncoder(system)
 
-            # If audio selected -> send audio packet
-            if self.audio_path:
-                self.log("Encoding AUDIO file using chaotic system...")
-                # chaos_encode_audio should return encoded_bytes, sample_width, frame_rate, channels
-                encoded_bytes, sw, fr, ch = chaos_encode_audio(self.audio_path)
+            # If image selected -> send image packet
+            if hasattr(self, 'image_path') and self.image_path:
+                self.log("Encoding IMAGE using chaotic system...")
+
+                encoded_bytes, img_size = chaos_encode_image(self.image_path)
 
                 packet = {
-                    'is_audio': True,
-                    'encoded_bytes': encoded_bytes,
-                    'sample_width': sw,
-                    'frame_rate': fr,
-                    'channels': ch,
-                    'system_type': self.system_var.get()
-                }
+                        'is_image': True,
+                        'encoded_bytes': encoded_bytes,
+                        'image_size': img_size,
+                        'system_type': self.system_var.get()
+                        }
 
                 serialized = pickle.dumps(packet)
                 self.client_socket.sendall(len(serialized).to_bytes(4, 'big'))
                 self.client_socket.sendall(serialized)
 
-                self.log(f"✓ Sent AUDIO file ({len(encoded_bytes)} bytes)")
-                self.status_var.set("Audio sent successfully!")
-                return
+                self.log(f"✓ Sent IMAGE ({len(encoded_bytes)} bytes)")
+                self.status_var.set("Image sent successfully!")
+            else:
+                # Send text message
+                message = self.message_input.get(1.0, tk.END).strip()
+                if not message:
+                    messagebox.showwarning("Warning", "Message is empty!")
+                    return
 
-            # Otherwise text
-            message = self.message_input.get(1.0, tk.END).strip()
-            if not message:
-                messagebox.showwarning("Warning", "Please enter a message or select an audio file!")
-                return
+                encoded_bits, message_bits, keystream = encoder.encode(message)
 
-            self.log("Encoding message...")
-            encoded_bits, _, keystream = encoder.encode(message)
-            packet = {
-                'is_audio': False,
-                'encoded_message': encoded_bits,
-                'system_type': self.system_var.get(),
-                'message_length': len(message),
-                # Optionally send a keystream sample for debug (first 80 bits)
-                'keystream_sample': keystream[:80]
-            }
+                packet = {
+                        'is_image': False,
+                        'encoded_message': encoded_bits,
+                        'message_bits': message_bits,
+                        'keystream_sample': keystream[:100],
+                        'system_type': self.system_var.get()
+                        }
 
-            serialized = pickle.dumps(packet)
-            self.client_socket.sendall(len(serialized).to_bytes(4, 'big'))
-            self.client_socket.sendall(serialized)
+                serialized = pickle.dumps(packet)
+                self.client_socket.sendall(len(serialized).to_bytes(4, 'big'))
+                self.client_socket.sendall(serialized)
 
-            self.log(f"✓ Sent encoded message ({len(encoded_bits)} bits)")
-            self.log(f"  System: {self.system_var.get()}")
-            self.log(f"  Initial conditions: [{x}, {y}, {z}]")
-            self.log(f"  Original message: '{message}'")
-            self.status_var.set("Message sent successfully!")
+                self.log(f"✓ Sent TEXT message ({len(encoded_bits)} bits)")
+                self.status_var.set("Message sent successfully!")
 
+        except ValueError as e:
+            messagebox.showerror("Error", f"Invalid input: {str(e)}")
+            self.log(f"✗ Input error: {str(e)}")
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to send message: {str(e)}")
-            self.log(f"✗ Error: {str(e)}")
+            messagebox.showerror("Error", f"Send failed: {str(e)}")
+            self.log(f"✗ Send error: {str(e)}")
+
+
 
 class ReceiverGUI:
     def __init__(self, root):
@@ -504,7 +503,6 @@ class ReceiverGUI:
 
         self.log("✓ Disconnected from sender")
         self.status_var.set("Disconnected")
-
     def receive_message(self):
         if not self.client_socket:
             messagebox.showwarning("Warning", "Not connected to sender!")
@@ -529,30 +527,50 @@ class ReceiverGUI:
 
             self.received_data = pickle.loads(data)
 
-            # Log differently depending on whether it's audio or text
-            if self.received_data.get('is_audio'):
-                self.log(f"✓ Received AUDIO packet ({len(self.received_data.get('encoded_bytes', b''))} bytes)")
-                self.log(f"  System type: {self.received_data.get('system_type')}")
+            # ✔ JUST LOG — DO NOT DECODE HERE
+            if self.received_data.get('is_image'):
+                self.log(f"✓ Received IMAGE ({len(self.received_data['encoded_bytes'])} bytes)")
             else:
-                self.log(f"✓ Received encoded message ({len(self.received_data.get('encoded_message',''))} bits)")
-                self.log(f"  System type: {self.received_data.get('system_type')}")
-                self.log(f"  Message length: {self.received_data.get('message_length')} characters")
-                em = self.received_data.get('encoded_message','')
-                self.log(f"  Encoded data (first 80 bits): {em[:80]}...")
+                em = self.received_data.get('encoded_message', '')
+                self.log(f"✓ Received TEXT message ({len(em)} bits)")
 
-            self.system_var.set(self.received_data.get('system_type', self.system_var.get()))
+            # Enable Decode button now
             self.decode_btn.config(state=tk.NORMAL)
-            self.status_var.set("Message received - Ready to decode")
+            self.status_var.set("Message received — ready to decode")
 
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to receive: {str(e)}")
-            self.log(f"✗ Error: {str(e)}")
+            messagebox.showerror("Error", f"Receive failed: {str(e)}")
+            self.log(f"✗ Receive error: {str(e)}")
+
 
     def decode_message(self):
         if not self.received_data:
             messagebox.showwarning("Warning", "No message received yet!")
             return
 
+        # If IMAGE packet → decode image
+        if self.received_data.get('is_image'):
+            try:
+                self.log("Decoding IMAGE...")
+
+                encoded_bytes = self.received_data['encoded_bytes']
+                img_size = self.received_data['image_size']
+
+                out_path = "decoded_image.png"
+                chaos_decode_image(encoded_bytes, img_size, out_path)
+
+                self.log(f"✓ Image decoded → saved as {out_path}")
+                self.results_text.delete(1.0, tk.END)
+                self.results_text.insert(1.0, f"IMAGE STORED: {out_path}")
+
+                self.status_var.set("Image decoded!")
+                return
+            except Exception as e:
+                messagebox.showerror("Error", f"Image decoding failed: {str(e)}")
+                self.log(f"✗ Image decoding error: {str(e)}")
+                return
+
+        # Otherwise TEXT packet → decode text
         try:
             x = float(self.init_x.get())
             y = float(self.init_y.get())
@@ -563,34 +581,8 @@ class ReceiverGUI:
             system = create_system(system_type, initial)
             encoder = ChaoticEncoder(system)
 
-            # AUDIO DECODING
-            if self.received_data.get('is_audio'):
-                self.log("Decoding chaotic AUDIO...")
-
-                # Simulate system (the encoder uses simulation to build keystream if needed)
-                encoder.system.simulate(500, 0.005)
-
-                encoded_bytes = self.received_data['encoded_bytes']
-                out_path = "decoded_audio.wav"
-
-                # chaos_decode_audio should accept encoded bytes and output a wav file
-                chaos_decode_audio(
-                    encoded_bytes,
-                    self.received_data['sample_width'],
-                    self.received_data['frame_rate'],
-                    self.received_data['channels'],
-                    out_path
-                )
-
-                self.log(f"✓ Audio decoded → saved as {out_path}")
-                self.results_text.delete(1.0, tk.END)
-                self.results_text.insert(1.0, f"AUDIO STORED: {out_path}")
-                self.status_var.set("Audio decoded!")
-                return
-
-            # TEXT DECODING
             encoder.system.simulate(500, 0.005)
-            encoded_message = self.received_data.get('encoded_message', '')
+            encoded_message = self.received_data['encoded_message']
             keystream = encoder.generate_keystream(len(encoded_message))
             decoded = encoder.decode(encoded_message, keystream)
 
@@ -598,27 +590,12 @@ class ReceiverGUI:
             self.results_text.insert(1.0, decoded)
             self.log("✓ Text decoded!")
 
-            # Optional: compare keystream samples if sender provided one
-            sender_keystream = self.received_data.get('keystream_sample', None)
-            if sender_keystream:
-                receiver_keystream = keystream[:len(sender_keystream)]
-                matches = sum(s == r for s, r in zip(sender_keystream, receiver_keystream))
-                match_percent = (matches / len(sender_keystream)) * 100
-                self.log(f"  Keystream match (sample): {matches}/{len(sender_keystream)} bits ({match_percent:.1f}%)")
-                if match_percent < 95:
-                    self.log("  ⚠️ Keystreams don't match — check initial conditions.")
-
-            printable_ratio = sum(c.isprintable() for c in decoded) / len(decoded) if decoded else 0
-            if printable_ratio < 0.7:
-                self.log("⚠️ Decoded message contains many non-printable characters — likely wrong key or system.")
-            else:
-                self.log(f"  Message appears valid (printable: {printable_ratio*100:.1f}%)")
-
             self.status_var.set("Message decoded!")
 
         except Exception as e:
             messagebox.showerror("Error", f"Decoding failed: {str(e)}")
             self.log(f"✗ Decoding error: {str(e)}")
+
 
 def main():
     def launch_sender():
