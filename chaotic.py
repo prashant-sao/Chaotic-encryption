@@ -28,8 +28,8 @@ class ChaoticSystem:
 class ChuaSystem(ChaoticSystem):
     """Chua's circuit"""
     
-    def __init__(self, initial_conditions=[0.7, 0.0, 0.0], 
-                 params={'alpha': 15.6, 'beta': 28.0, 'a': -1.143, 'b': -0.714}):
+    def __init__(self, initial_conditions=[0.1, 0.0, 0.0], 
+                 params={'alpha': 9, 'beta': 14.26, 'a': -1.27, 'b': -0.68}):
         super().__init__(initial_conditions, params)
     
     def equations(self, state, t):
@@ -92,16 +92,13 @@ class ChaoticEncoder:
         self.system = system
     
     def text_to_bits(self, text):
-        """Convert text to binary string"""
         return ''.join(format(ord(c), '08b') for c in text)
     
     def bits_to_text(self, bits):
-        """Convert binary string to text"""
         chars = [bits[i:i+8] for i in range(0, len(bits), 8)]
         return ''.join(chr(int(c, 2)) for c in chars if len(c) == 8)
     
     def generate_keystream(self, length, component=0):
-        """Generate pseudo-random keystream from chaotic trajectory"""
         if self.system.trajectory is None:
             raise ValueError("System must be simulated first")
         
@@ -113,7 +110,6 @@ class ChaoticEncoder:
         return keystream
     
     def encode(self, message, t_span=100, dt=0.01, component=0):
-        """Encode a message using chaotic system"""
         message_bits = self.text_to_bits(message)
         t, trajectory = self.system.simulate(t_span, dt)
         keystream = self.generate_keystream(len(message_bits), component)
@@ -122,10 +118,8 @@ class ChaoticEncoder:
         return encoded_bits, message_bits, keystream
     
     def decode(self, encoded_bits, keystream):
-        """Decode an encoded message using the keystream"""
         decoded_bits = ''.join(str(int(e) ^ int(k)) for e, k in zip(encoded_bits, keystream))
         decoded_message = self.bits_to_text(decoded_bits)
-        
         return decoded_message
 
 class ChaoticCryptoGUI:
@@ -141,29 +135,23 @@ class ChaoticCryptoGUI:
         self.setup_ui()
     
     def setup_ui(self):
-        # Main container
         main_frame = ttk.Frame(self.root, padding="10")
         main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
         
         self.root.columnconfigure(0, weight=1)
-        self.root.rowconfigure(0, weight=1)
         main_frame.columnconfigure(0, weight=1)
-        main_frame.rowconfigure(4, weight=1)
         
-        # Title
         title_label = ttk.Label(main_frame, text="Chaotic Systems Message Encoder/Decoder", 
                                 font=('Arial', 16, 'bold'))
         title_label.grid(row=0, column=0, pady=10)
         
-        # System selection frame
         system_frame = ttk.LabelFrame(main_frame, text="System Configuration", padding="10")
         system_frame.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=5)
         
         ttk.Label(system_frame, text="Chaotic System:").grid(row=0, column=0, sticky=tk.W, padx=5)
         self.system_var = tk.StringVar(value="Lorenz")
-        system_combo = ttk.Combobox(system_frame, textvariable=self.system_var, 
-                                     values=["Lorenz", "Chua", "Rössler"], state="readonly", width=15)
-        system_combo.grid(row=0, column=1, padx=5)
+        ttk.Combobox(system_frame, textvariable=self.system_var, 
+                     values=["Lorenz", "Chua", "Rössler"], state="readonly", width=15).grid(row=0, column=1, padx=5)
         
         ttk.Label(system_frame, text="Initial X:").grid(row=0, column=2, sticky=tk.W, padx=5)
         self.init_x = ttk.Entry(system_frame, width=10)
@@ -179,8 +167,13 @@ class ChaoticCryptoGUI:
         self.init_z = ttk.Entry(system_frame, width=10)
         self.init_z.insert(0, "1.0")
         self.init_z.grid(row=0, column=7, padx=5)
+
+        # ⭐ NEW: SELECT COMPONENT (X/Y/Z)
+        ttk.Label(system_frame, text="Keystream Component:").grid(row=1, column=0, sticky=tk.W, padx=5)
+        self.comp_var = tk.StringVar(value="0")
+        ttk.Combobox(system_frame, textvariable=self.comp_var,
+                     values=["0 (X)", "1 (Y)", "2 (Z)"], state="readonly", width=15).grid(row=1, column=1, padx=5)
         
-        # Message input frame
         input_frame = ttk.LabelFrame(main_frame, text="Message Input", padding="10")
         input_frame.grid(row=2, column=0, sticky=(tk.W, tk.E), pady=5)
         input_frame.columnconfigure(0, weight=1)
@@ -189,43 +182,27 @@ class ChaoticCryptoGUI:
         self.message_input.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=5)
         self.message_input.insert(1.0, "Hello from chaos theory!")
         
-        # Buttons frame
         button_frame = ttk.Frame(main_frame)
         button_frame.grid(row=3, column=0, pady=10)
         
-        self.encode_btn = ttk.Button(button_frame, text="🔒 Encode Message", 
-                                      command=self.encode_message)
-        self.encode_btn.grid(row=0, column=0, padx=5)
-        
-        self.decode_btn = ttk.Button(button_frame, text="🔓 Decode Message", 
-                                      command=self.decode_message, state=tk.DISABLED)
+        ttk.Button(button_frame, text="🔒 Encode Message", command=self.encode_message).grid(row=0, column=0, padx=5)
+        self.decode_btn = ttk.Button(button_frame, text="🔓 Decode Message", state=tk.DISABLED, command=self.decode_message)
         self.decode_btn.grid(row=0, column=1, padx=5)
         
-        self.visualize_btn = ttk.Button(button_frame, text="📊 Visualize Attractor", 
-                                         command=self.visualize_attractor)
-        self.visualize_btn.grid(row=0, column=2, padx=5)
+        ttk.Button(button_frame, text="📊 Visualize Attractor", command=self.visualize_attractor).grid(row=0, column=2, padx=5)
+        ttk.Button(button_frame, text="🗑️ Clear", command=self.clear_all).grid(row=0, column=3, padx=5)
         
-        self.clear_btn = ttk.Button(button_frame, text="🗑️ Clear", 
-                                     command=self.clear_all)
-        self.clear_btn.grid(row=0, column=3, padx=5)
-        
-        # Results frame
         results_frame = ttk.LabelFrame(main_frame, text="Results", padding="10")
         results_frame.grid(row=4, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), pady=5)
         results_frame.columnconfigure(0, weight=1)
-        results_frame.rowconfigure(0, weight=1)
         
         self.results_text = scrolledtext.ScrolledText(results_frame, height=15, wrap=tk.WORD)
         self.results_text.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
         
-        # Status bar
         self.status_var = tk.StringVar(value="Ready")
-        status_bar = ttk.Label(main_frame, textvariable=self.status_var, 
-                               relief=tk.SUNKEN, anchor=tk.W)
-        status_bar.grid(row=5, column=0, sticky=(tk.W, tk.E), pady=5)
+        ttk.Label(main_frame, textvariable=self.status_var, relief=tk.SUNKEN, anchor=tk.W).grid(row=5, column=0, sticky=(tk.W, tk.E), pady=5)
     
     def get_system(self):
-        """Create the selected chaotic system"""
         try:
             x = float(self.init_x.get())
             y = float(self.init_y.get())
@@ -235,17 +212,13 @@ class ChaoticCryptoGUI:
             messagebox.showerror("Error", "Invalid initial conditions. Using defaults.")
             initial = [1.0, 1.0, 1.0]
         
-        system_name = self.system_var.get()
+        name = self.system_var.get()
         
-        if system_name == "Lorenz":
-            return LorenzSystem(initial)
-        elif system_name == "Chua":
-            return ChuaSystem(initial)
-        elif system_name == "Rössler":
-            return RosslerSystem(initial)
+        if name == "Lorenz": return LorenzSystem(initial)
+        if name == "Chua": return ChuaSystem(initial)
+        if name == "Rössler": return RosslerSystem(initial)
     
     def encode_message(self):
-        """Encode the message"""
         message = self.message_input.get(1.0, tk.END).strip()
         
         if not message:
@@ -253,7 +226,6 @@ class ChaoticCryptoGUI:
             return
         
         self.status_var.set("Encoding...")
-        self.encode_btn.config(state=tk.DISABLED)
         self.results_text.delete(1.0, tk.END)
         
         def encode_thread():
@@ -261,103 +233,109 @@ class ChaoticCryptoGUI:
                 system = self.get_system()
                 self.current_system = system
                 encoder = ChaoticEncoder(system)
-                
+
+                # ⭐ NEW: component selection
+                component = int(self.comp_var.get()[0])
+
                 self.encoded_bits, original_bits, self.keystream = encoder.encode(
-                    message, t_span=100, dt=0.01, component=0
+                    message, t_span=100, dt=0.01, component=component
                 )
                 
-                # Display results
                 results = f"Original Message: {message}\n"
                 results += f"Message Length: {len(message)} characters\n"
                 results += f"Binary Length: {len(original_bits)} bits\n\n"
                 results += f"System: {self.system_var.get()}\n"
-                results += f"Initial Conditions: [{self.init_x.get()}, {self.init_y.get()}, {self.init_z.get()}]\n\n"
-                results += f"Original Binary (first 80 bits):\n{original_bits[:80]}...\n\n"
-                results += f"Keystream (first 80 bits):\n{self.keystream[:80]}...\n\n"
-                results += f"Encoded Binary (first 80 bits):\n{self.encoded_bits[:80]}...\n\n"
+                results += f"Initial Conditions: [{self.init_x.get()}, {self.init_y.get()}, {self.init_z.get()}]\n"
+                results += f"Keystream Component: {component} ({['X','Y','Z'][component]})\n\n"
+                results += f"Original Binary (first 80 bits): {original_bits[:80]}...\n"
+                results += f"Keystream     (first 80 bits): {self.keystream[:80]}...\n"
+                results += f"Encoded Bits  (first 80 bits): {self.encoded_bits[:80]}...\n\n"
                 results += f"✓ Message successfully encoded!\n"
-                results += f"Total encoded bits: {len(self.encoded_bits)}"
                 
                 self.results_text.insert(1.0, results)
                 self.decode_btn.config(state=tk.NORMAL)
                 self.status_var.set("Encoding complete!")
-                
+            
             except Exception as e:
-                messagebox.showerror("Error", f"Encoding failed: {str(e)}")
+                messagebox.showerror("Error", str(e))
                 self.status_var.set("Encoding failed!")
-            finally:
-                self.encode_btn.config(state=tk.NORMAL)
         
-        thread = threading.Thread(target=encode_thread)
-        thread.start()
+        threading.Thread(target=encode_thread).start()
     
     def decode_message(self):
-        """Decode the message"""
-        if self.encoded_bits is None or self.keystream is None:
-            messagebox.showwarning("Warning", "Please encode a message first.")
-            return
+        encoder = ChaoticEncoder(self.current_system)
+        decoded_message = encoder.decode(self.encoded_bits, self.keystream)
         
-        self.status_var.set("Decoding...")
+        self.results_text.insert(tk.END, "\n\n==============================\nDECODED MESSAGE:\n")
+        self.results_text.insert(tk.END, decoded_message + "\n")
+        self.results_text.insert(tk.END, "==============================\n✓ Decoding successful!\n")
         
-        try:
-            encoder = ChaoticEncoder(self.current_system)
-            decoded_message = encoder.decode(self.encoded_bits, self.keystream)
-            
-            self.results_text.insert(tk.END, f"\n\n{'=' * 60}\n")
-            self.results_text.insert(tk.END, f"DECODED MESSAGE:\n")
-            self.results_text.insert(tk.END, f"{'=' * 60}\n")
-            self.results_text.insert(tk.END, f"{decoded_message}\n")
-            self.results_text.insert(tk.END, f"{'=' * 60}\n")
-            self.results_text.insert(tk.END, f"✓ Decoding successful!\n")
-            
-            self.status_var.set("Decoding complete!")
-            
-        except Exception as e:
-            messagebox.showerror("Error", f"Decoding failed: {str(e)}")
-            self.status_var.set("Decoding failed!")
+        self.status_var.set("Decoding complete!")
     
     def visualize_attractor(self):
-        """Visualize the 3D attractor"""
+        """Visualize X(t), Y(t), Z(t) and 3D attractor together"""
         self.status_var.set("Generating visualization...")
-        
+
         def visualize_thread():
             try:
                 system = self.get_system()
-                system.simulate(50, 0.01)
-                
-                # Create new window for visualization
-                viz_window = tk.Toplevel(self.root)
-                viz_window.title(f"{self.system_var.get()} Attractor")
-                viz_window.geometry("800x600")
-                
-                fig = Figure(figsize=(8, 6))
-                ax = fig.add_subplot(111, projection='3d')
-                
+                t, _ = system.simulate(50, 0.01)
+
                 traj = system.trajectory
-                ax.plot(traj[:, 0], traj[:, 1], traj[:, 2], linewidth=0.5, color='blue')
-                ax.set_xlabel('X', fontsize=10)
-                ax.set_ylabel('Y', fontsize=10)
-                ax.set_zlabel('Z', fontsize=10)
-                ax.set_title(f'{self.system_var.get()} Attractor', fontsize=12, fontweight='bold')
-                
-                canvas = FigureCanvasTkAgg(fig, master=viz_window)
+                x, y, z = traj[:, 0], traj[:, 1], traj[:, 2]
+
+                # New window
+                viz = tk.Toplevel(self.root)
+                viz.title(f"{self.system_var.get()} – Full Visualization")
+                viz.geometry("1100x900")
+
+                # Create figure
+                fig = Figure(figsize=(10, 8))
+
+                # Subplot 1: X(t)
+                ax1 = fig.add_subplot(221)
+                ax1.plot(t, x, linewidth=0.8)
+                ax1.set_title("X vs t")
+                ax1.set_xlabel("t")
+                ax1.set_ylabel("X")
+
+                # Subplot 2: Y(t)
+                ax2 = fig.add_subplot(222)
+                ax2.plot(t, y, linewidth=0.8, color='orange')
+                ax2.set_title("Y vs t")
+                ax2.set_xlabel("t")
+                ax2.set_ylabel("Y")
+
+                # Subplot 3: Z(t)
+                ax3 = fig.add_subplot(223)
+                ax3.plot(t, z, linewidth=0.8, color='green')
+                ax3.set_title("Z vs t")
+                ax3.set_xlabel("t")
+                ax3.set_ylabel("Z")
+
+                # Subplot 4: 3D attractor
+                ax4 = fig.add_subplot(224, projection='3d')
+                ax4.plot(x, y, z, linewidth=0.7)
+                ax4.set_title("3D Attractor")
+                ax4.set_xlabel("X")
+                ax4.set_ylabel("Y")
+                ax4.set_zlabel("Z")
+
+                # Pack into Tkinter
+                canvas = FigureCanvasTkAgg(fig, master=viz)
                 canvas.draw()
                 canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
-                
+
                 self.status_var.set("Visualization complete!")
-                
+
             except Exception as e:
-                messagebox.showerror("Error", f"Visualization failed: {str(e)}")
+                messagebox.showerror("Error", f"Visualization failed: {e}")
                 self.status_var.set("Visualization failed!")
-        
-        thread = threading.Thread(target=visualize_thread)
-        thread.start()
-    
+
+        threading.Thread(target=visualize_thread).start()
+
     def clear_all(self):
-        """Clear all fields"""
         self.results_text.delete(1.0, tk.END)
-        self.encoded_bits = None
-        self.keystream = None
         self.decode_btn.config(state=tk.DISABLED)
         self.status_var.set("Cleared!")
 
