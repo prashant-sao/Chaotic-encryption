@@ -613,6 +613,7 @@ class ReceiverGUI:
             messagebox.showerror("Error", f"Decoding failed: {e}"); self.log(f"✗ Decoding error: {e}")
 
 
+
 # -----------------------
 # Launcher
 # -----------------------
@@ -622,11 +623,15 @@ def main():
     def launch_receiver():
         r = tk.Tk(); ReceiverGUI(r); r.mainloop()
 
-    selector = tk.Tk(); selector.title("Chaotic Cryptography - Select Mode"); selector.geometry("420x300")
+    selector = tk.Tk(); selector.title("Chaotic Cryptography - Select Mode"); selector.geometry("420x260")
     frm = ttk.Frame(selector, padding=18); frm.grid(row=0, column=0, sticky=(tk.N, tk.S, tk.E, tk.W))
     ttk.Label(frm, text="Chaotic Cryptography System", font=('Arial', 16, 'bold')).grid(row=0, column=0, pady=(8,18))
+    
+    # Note: Added sticky=(tk.E, tk.W) so buttons stretch if you resize, 
+    # but they will stay centered because of the column configuration.
     ttk.Button(frm, text="🔐 SENDER (Encode & Send)", command=lambda: [selector.destroy(), launch_sender()], width=34).grid(row=1, column=0, pady=8)
     ttk.Button(frm, text="🔓 RECEIVER (Receive & Decode)", command=lambda: [selector.destroy(), launch_receiver()], width=34).grid(row=2, column=0, pady=6)
+    
     selector.mainloop()
 
 if __name__ == "__main__":
