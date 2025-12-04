@@ -1,3 +1,4 @@
+# Modified chaotic cryptography GUI with Lyapunov separation logging & plotting
 import numpy as np
 from scipy.integrate import odeint
 import matplotlib.pyplot as plt
@@ -10,11 +11,11 @@ import socket
 import pickle
 
 # -----------------------
-# Chaotic systems + encoder
+# Chaotic systems + encoder (with Lyapunov computation)
 # -----------------------
 class ChaoticSystem:
     def __init__(self, initial_conditions, params):
-        self.initial_conditions = np.array(initial_conditions)
+        self.initial_conditions = np.array(initial_conditions, dtype=float)
         self.params = params
         self.trajectory = None
 
@@ -25,6 +26,48 @@ class ChaoticSystem:
 
     def equations(self, state, t):
         raise NotImplementedError
+
+    def compute_lyapunov(self, t, trajectory, eps=1e-8, perturb_component=0):
+        """
+        Compute separation between trajectory and a nearby perturbed trajectory,
+        then compute finite-time Lyapunov exponent FTLE(t) = ln(sep(t)/eps) / t.
+        Returns:
+            sep: array of Euclidean separations |x'(t)-x(t)|
+            ln_sep: natural log of sep (with small floor)
+            ftle: finite-time Lyapunov exponent array (with t>0)
+        """
+        # prepare perturbed initial condition
+        pert_ic = self.initial_conditions.copy()
+        pert_ic[perturb_component] += eps
+
+        # simulate perturbed trajectory using the same time vector (use odeint)
+        pert_traj = odeint(self.equations, pert_ic, t)
+
+        # separation (Euclidean norm)
+        diff = pert_traj - trajectory
+        sep = np.linalg.norm(diff, axis=1)
+
+        # avoid zeros in log calculation
+        tiny = 1e-30
+        safe_sep = np.maximum(sep, tiny)
+
+        # natural log of separation
+        ln_sep = np.log(safe_sep)
+
+        # FTLE: ln(sep/eps) / t  (for t==0 we set FTLE to same as first non-zero or 0)
+        ftle = np.zeros_like(ln_sep)
+        # compute only for t>0 to avoid div by zero - simple forward fill for t==0
+        positive_t = t > 0
+        ftle[positive_t] = (np.log(safe_sep[positive_t] / eps)) / t[positive_t]
+        # handle first sample (t==0) - set to ftle at next positive index or 0
+        if not np.any(positive_t):
+            ftle[:] = 0.0
+        else:
+            first_pos_idx = np.argmax(positive_t)
+            ftle[0] = ftle[first_pos_idx]
+
+        return sep, ln_sep, ftle
+
 
 class ChuaSystem(ChaoticSystem):
     def __init__(self, initial_conditions=[0.7, 0.0, 0.0],
@@ -40,6 +83,7 @@ class ChuaSystem(ChaoticSystem):
         dz = -beta * y
         return [dx, dy, dz]
 
+
 class LorenzSystem(ChaoticSystem):
     def __init__(self, initial_conditions=[1.0, 1.0, 1.0],
                  params={'sigma': 10.0, 'rho': 28.0, 'beta': 8.0/3.0}):
@@ -53,6 +97,7 @@ class LorenzSystem(ChaoticSystem):
         dz = x * y - beta * z
         return [dx, dy, dz]
 
+
 class RosslerSystem(ChaoticSystem):
     def __init__(self, initial_conditions=[1.0, 1.0, 1.0],
                  params={'a': 0.2, 'b': 0.2, 'c': 5.7}):
@@ -65,6 +110,7 @@ class RosslerSystem(ChaoticSystem):
         dy = x + a * y
         dz = b + z * (x - c)
         return [dx, dy, dz]
+
 
 class ChaoticEncoder:
     def __init__(self, system):
@@ -96,17 +142,35 @@ class ChaoticEncoder:
             keystream.append(bit)
         return ''.join(keystream)
 
-    def encode(self, message, t_span=500, dt=0.005, component=0):
+    def encode(self, message, t_span=500, dt=0.005, component=0, lyap_eps=1e-8, lyap_component=0):
+        """
+        Returns:
+            encoded_bits, message_bits, keystream, t, trajectory, lyap_results
+        where lyap_results = dict(sep, ln_sep, ftle, eps, component)
+        """
         message_bits = self.text_to_bits(message)
         t, trajectory = self.system.simulate(t_span, dt)
+        # compute lyapunov separation and FTLE
+        sep, ln_sep, ftle = self.system.compute_lyapunov(t, trajectory, eps=lyap_eps, perturb_component=lyap_component)
+
         keystream = self.generate_keystream(len(message_bits), component)
         encoded_bits = ''.join(str(int(m) ^ int(k)) for m, k in zip(message_bits, keystream))
-        return encoded_bits, message_bits, keystream, t, trajectory
+
+        lyap_results = {
+            'sep': sep,
+            'ln_sep': ln_sep,
+            'ftle': ftle,
+            'eps': lyap_eps,
+            'perturb_component': lyap_component,
+            't': t
+        }
+        return encoded_bits, message_bits, keystream, t, trajectory, lyap_results
 
     def decode(self, encoded_bits, keystream):
         decoded_bits = ''.join(str(int(e) ^ int(k)) for e, k in zip(encoded_bits, keystream))
         decoded_message = self.bits_to_text(decoded_bits)
         return decoded_message, decoded_bits
+
 
 def create_system(system_name, initial_conditions):
     if system_name == "Lorenz":
@@ -118,6 +182,7 @@ def create_system(system_name, initial_conditions):
     else:
         raise ValueError(f"Unknown system: {system_name}")
 
+
 # -----------------------
 # GUI
 # -----------------------
@@ -125,7 +190,7 @@ class SenderGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("Sender - Chaotic Message Encoder")
-        self.root.geometry("900x620")
+        self.root.geometry("1000x700")
 
         self.server_socket = None
         self.client_socket = None
@@ -137,6 +202,7 @@ class SenderGUI:
         self.last_message_bits = None
         self.last_encoded_bits = None
         self.last_keystream = None
+        self.last_lyap = None
 
         self.setup_ui()
 
@@ -169,20 +235,27 @@ class SenderGUI:
         self.message_input = scrolledtext.ScrolledText(msg_frame, height=4, wrap=tk.WORD); self.message_input.grid(row=0, column=0, sticky=(tk.W, tk.E))
         self.message_input.insert(1.0, "Secret message from chaos!")
 
+        # Lyapunov options
+        lyap_frame = ttk.Frame(main); lyap_frame.grid(row=3, column=0, sticky=tk.W, pady=(6,0))
+        ttk.Label(lyap_frame, text="Lyap eps:").grid(row=0, column=0, padx=4)
+        self.lyap_eps_entry = ttk.Entry(lyap_frame, width=8); self.lyap_eps_entry.insert(0, "1e-8"); self.lyap_eps_entry.grid(row=0, column=1, padx=4)
+        ttk.Label(lyap_frame, text="Perturb comp:").grid(row=0, column=2, padx=4)
+        self.lyap_comp_entry = ttk.Entry(lyap_frame, width=4); self.lyap_comp_entry.insert(0, "0"); self.lyap_comp_entry.grid(row=0, column=3, padx=4)
+
         # buttons (send + visualize)
-        btn_frame = ttk.Frame(main); btn_frame.grid(row=3, column=0, sticky=tk.W, pady=(6,8))
+        btn_frame = ttk.Frame(main); btn_frame.grid(row=4, column=0, sticky=tk.W, pady=(6,8))
         self.send_btn = ttk.Button(btn_frame, text="📤 Encode & Send Message", command=self.send_message, state=tk.DISABLED)
         self.send_btn.grid(row=0, column=0, padx=6)
         self.visualize_btn = ttk.Button(btn_frame, text="🔍 Visualize Waveforms", command=self.open_visualize_sender)
         self.visualize_btn.grid(row=0, column=1, padx=6)
 
         # Log (reduced)
-        log_frame = ttk.LabelFrame(main, text="Activity Log", padding=6); log_frame.grid(row=4, column=0, sticky=(tk.W, tk.E, tk.S), pady=(6,4))
+        log_frame = ttk.LabelFrame(main, text="Activity Log", padding=6); log_frame.grid(row=5, column=0, sticky=(tk.W, tk.E, tk.S), pady=(6,4))
         log_frame.columnconfigure(0, weight=1)
-        self.log_text = scrolledtext.ScrolledText(log_frame, height=6, wrap=tk.WORD)
+        self.log_text = scrolledtext.ScrolledText(log_frame, height=12, wrap=tk.WORD)
         self.log_text.grid(row=0, column=0, sticky=(tk.W, tk.E))
         self.status_var = tk.StringVar(value="Ready - Start server to begin")
-        ttk.Label(main, textvariable=self.status_var, relief=tk.SUNKEN, anchor=tk.W).grid(row=5, column=0, sticky=(tk.W, tk.E), pady=(6,4))
+        ttk.Label(main, textvariable=self.status_var, relief=tk.SUNKEN, anchor=tk.W).grid(row=6, column=0, sticky=(tk.W, tk.E), pady=(6,4))
 
     def log(self, msg):
         self.log_text.insert(tk.END, f"{msg}\n"); self.log_text.see(tk.END)
@@ -226,30 +299,42 @@ class SenderGUI:
         repeat = int(np.ceil(length / len(vals)))
         return np.repeat(vals, repeat)[:length]
 
-    def plot_waveforms_in_popup(self, t, trajectory, message_bits, encoded_bits, title="Sender Waveforms"):
+    def plot_waveforms_in_popup(self, t, trajectory, message_bits, encoded_bits, lyap_results=None, title="Sender Waveforms"):
         # create popup
         popup = tk.Toplevel(self.root)
         popup.title(title)
-        popup.geometry("1100x700")
-        fig = Figure(figsize=(10.5, 6.5), dpi=110)
-        ax1 = fig.add_subplot(311)
-        ax2 = fig.add_subplot(312, sharex=ax1)
-        ax3 = fig.add_subplot(313, sharex=ax1)
+        popup.geometry("1200x800")
+        # build figure with 4 rows if lyap_results provided
+        rows = 4 if lyap_results is not None else 3
+        fig = Figure(figsize=(11.0, 8.0), dpi=110)
+        axes = [fig.add_subplot(rows, 1, i+1) for i in range(rows)]
 
         # chaos x(t)
-        ax1.plot(t, trajectory[:,0], linewidth=1.4)
-        ax1.set_ylabel("x(t)"); ax1.set_title("Chaotic waveform (x-component)"); ax1.grid(True)
+        axes[0].plot(t, trajectory[:,0], linewidth=1.2)
+        axes[0].set_ylabel("x(t)"); axes[0].set_title("Chaotic waveform (x-component)"); axes[0].grid(True)
 
         # message waveform
         wave_msg = self._bits_to_wave(message_bits, len(t))
-        ax2.step(t, wave_msg, where='post', linewidth=1.2)
-        ax2.set_ylabel("Message\n(1:+1 / 0:-1)"); ax2.set_title("Original message waveform (bits mapped)"); ax2.set_ylim(-1.6, 1.6); ax2.grid(True)
+        axes[1].step(t, wave_msg, where='post', linewidth=1.0)
+        axes[1].set_ylabel("Message\n(1:+1 / 0:-1)"); axes[1].set_title("Original message waveform (bits mapped)"); axes[1].set_ylim(-1.6, 1.6); axes[1].grid(True)
 
         # encoded waveform
         wave_enc = self._bits_to_wave(encoded_bits, len(t))
-        ax3.step(t, wave_enc, where='post', linewidth=1.2)
-        ax3.set_ylabel("Encoded\n(1:+1 / 0:-1)"); ax3.set_title("Encoded message waveform (after XOR)"); ax3.set_ylim(-1.6, 1.6)
-        ax3.set_xlabel("Time"); ax3.grid(True)
+        axes[2].step(t, wave_enc, where='post', linewidth=1.0)
+        axes[2].set_ylabel("Encoded\n(1:+1 / 0:-1)"); axes[2].set_title("Encoded message waveform (after XOR)"); axes[2].set_ylim(-1.6, 1.6)
+        axes[2].set_xlabel("Time"); axes[2].grid(True)
+
+        # lyapunov plots (ln separation + FTLE)
+        if lyap_results is not None:
+            ln_sep = lyap_results['ln_sep']; ftle = lyap_results['ftle']; t_lyap = lyap_results['t']
+            ax4 = axes[3]
+            ax4.plot(t_lyap, ln_sep, linewidth=1.0, label="ln(sep)")
+            # FTLE plotted on secondary axis (same subplot)
+            ax4b = ax4.twinx()
+            ax4b.plot(t_lyap, ftle, linewidth=1.0, linestyle='--', label="FTLE")
+            ax4.set_ylabel("ln(sep)"); ax4b.set_ylabel("FTLE (1/t)")
+            ax4.set_title("Lyapunov: ln(separation) and finite-time Lyapunov exponent (FTLE)")
+            ax4.grid(True)
 
         fig.tight_layout(pad=2.0)
         canvas = FigureCanvasTkAgg(fig, master=popup)
@@ -261,24 +346,53 @@ class SenderGUI:
         try:
             # If we've encoded previously, use those artifacts
             if self.last_t is not None and self.last_trajectory is not None and self.last_message_bits is not None and self.last_encoded_bits is not None:
-                t = self.last_t; trajectory = self.last_trajectory; msg_bits = self.last_message_bits; enc_bits = self.last_encoded_bits
+                t = self.last_t; trajectory = self.last_trajectory; msg_bits = self.last_message_bits; enc_bits = self.last_encoded_bits; lyap = self.last_lyap
             else:
                 # simulate from current GUI values without sending
                 message = self.message_input.get(1.0, tk.END).strip()
                 if not message:
                     messagebox.showwarning("Warning", "Please enter a message to visualize!"); return
                 x = float(self.init_x.get()); y = float(self.init_y.get()); z = float(self.init_z.get())
+                lyap_eps = float(self.lyap_eps_entry.get())
+                lyap_comp = int(self.lyap_comp_entry.get())
                 system = create_system(self.system_var.get(), [x, y, z])
                 encoder = ChaoticEncoder(system)
-                enc_bits, msg_bits, keystream, t, trajectory = encoder.encode(message)
-                # do not save as sent artifacts, but allow preview (we do store so user can re-open quickly)
-                self.last_t = t; self.last_trajectory = trajectory; self.last_message_bits = msg_bits; self.last_encoded_bits = enc_bits; self.last_keystream = keystream
+                enc_bits, msg_bits, keystream, t, trajectory, lyap = encoder.encode(message, lyap_eps=lyap_eps, lyap_component=lyap_comp)
+                # store for re-open
+                self.last_t = t; self.last_trajectory = trajectory; self.last_message_bits = msg_bits; self.last_encoded_bits = enc_bits; self.last_keystream = keystream; self.last_lyap = lyap
 
-            # open popup with plots
-            self.plot_waveforms_in_popup(t, trajectory, msg_bits, enc_bits, title="Sender — Chaos / Message / Encoded")
+            # open popup with plots (include lyapunov if available)
+            self.plot_waveforms_in_popup(t, trajectory, msg_bits, enc_bits, lyap_results=self.last_lyap, title="Sender — Chaos / Message / Encoded / Lyapunov")
         except Exception as e:
             messagebox.showerror("Visualization Error", f"Could not visualize: {e}")
             self.log(f"✗ Visualization error: {e}")
+
+    def _log_lyapunov_summary(self, lyap_results):
+        """
+        Log a compact Lyapunov summary into the activity log:
+        - eps (initial perturbation)
+        - final separation
+        - max FTLE, mean FTLE (over reasonable window)
+        - small sample of ln(sep) values
+        """
+        if lyap_results is None:
+            return
+        sep = lyap_results['sep']; ln_sep = lyap_results['ln_sep']; ftle = lyap_results['ftle']; eps = lyap_results['eps']
+        t = lyap_results['t']
+        # summary stats
+        final_sep = sep[-1]
+        max_ftle = np.max(ftle)
+        mean_ftle = np.mean(ftle[int(len(ftle)*0.1):]) if len(ftle) > 10 else np.mean(ftle)
+        # sample ln(sep) first/last few
+        sample_ln_front = ','.join([f"{v:.3f}" for v in ln_sep[1:6]]) if len(ln_sep) > 6 else ','.join([f"{v:.3f}" for v in ln_sep])
+        sample_ln_back = ','.join([f"{v:.3f}" for v in ln_sep[-5:]]) if len(ln_sep) >= 5 else ''
+        self.log(f"--- Lyapunov summary ---")
+        self.log(f"eps (initial perturbation): {eps:e}")
+        self.log(f"perturb component index: {lyap_results.get('perturb_component', 0)}")
+        self.log(f"final separation |Δx(T)|: {final_sep:.6e}")
+        self.log(f"max FTLE: {max_ftle:.6f}; mean FTLE (after 10% burn): {mean_ftle:.6f}")
+        self.log(f"sample ln(sep) start: [{sample_ln_front}] ... end: [{sample_ln_back}]")
+        self.log(f"(Interpretation: positive FTLE => exponential divergence => high sensitivity)")
 
     def send_message(self):
         if not self.client_socket:
@@ -288,11 +402,13 @@ class SenderGUI:
             messagebox.showwarning("Warning", "Please enter a message!"); return
         try:
             x = float(self.init_x.get()); y = float(self.init_y.get()); z = float(self.init_z.get())
+            lyap_eps = float(self.lyap_eps_entry.get())
+            lyap_comp = int(self.lyap_comp_entry.get())
             system = create_system(self.system_var.get(), [x, y, z])
             encoder = ChaoticEncoder(system)
-            encoded_bits, message_bits, keystream, t, trajectory = encoder.encode(message)
+            encoded_bits, message_bits, keystream, t, trajectory, lyap_results = encoder.encode(message, lyap_eps=lyap_eps, lyap_component=lyap_comp)
             # store artifacts (useful for later visualize)
-            self.last_t = t; self.last_trajectory = trajectory; self.last_message_bits = message_bits; self.last_encoded_bits = encoded_bits; self.last_keystream = keystream
+            self.last_t = t; self.last_trajectory = trajectory; self.last_message_bits = message_bits; self.last_encoded_bits = encoded_bits; self.last_keystream = keystream; self.last_lyap = lyap_results
 
             # prepare and send packet (include small sample for debug)
             pkt = {'encoded_message': encoded_bits, 'system_type': self.system_var.get(), 'message_length': len(message), 'keystream_sample': keystream[:160]}
@@ -303,12 +419,16 @@ class SenderGUI:
             self.log(f"  System: {self.system_var.get()}")
             self.log(f"  Initial conds: [{x}, {y}, {z}]")
             self.log(f"  Original message: '{message}'")
+            # Lyapunov summary logging
+            self._log_lyapunov_summary(lyap_results)
+
             self.status_var.set("Message sent successfully!")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to send message: {e}"); self.log(f"✗ Error: {e}")
 
+
 # -----------------------
-# Receiver GUI
+# Receiver GUI (unchanged except small cosmetic)
 # -----------------------
 class ReceiverGUI:
     def __init__(self, root):
@@ -492,6 +612,7 @@ class ReceiverGUI:
         except Exception as e:
             messagebox.showerror("Error", f"Decoding failed: {e}"); self.log(f"✗ Decoding error: {e}")
 
+
 # -----------------------
 # Launcher
 # -----------------------
@@ -501,7 +622,7 @@ def main():
     def launch_receiver():
         r = tk.Tk(); ReceiverGUI(r); r.mainloop()
 
-    selector = tk.Tk(); selector.title("Chaotic Cryptography - Select Mode"); selector.geometry("420x260")
+    selector = tk.Tk(); selector.title("Chaotic Cryptography - Select Mode"); selector.geometry("420x300")
     frm = ttk.Frame(selector, padding=18); frm.grid(row=0, column=0, sticky=(tk.N, tk.S, tk.E, tk.W))
     ttk.Label(frm, text="Chaotic Cryptography System", font=('Arial', 16, 'bold')).grid(row=0, column=0, pady=(8,18))
     ttk.Button(frm, text="🔐 SENDER (Encode & Send)", command=lambda: [selector.destroy(), launch_sender()], width=34).grid(row=1, column=0, pady=8)
